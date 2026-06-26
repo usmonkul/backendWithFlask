@@ -7,4 +7,6 @@ if sys.executable != INTERP:
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from app import application
+from app import app as application
+
+
