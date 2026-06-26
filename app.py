@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -8,7 +10,18 @@ import mysql.connector
 from functools import wraps
 
 app = Flask(__name__)
-CORS(app)
+application = app
+
+# CORS configuration - allow specific origins or all (configurable)
+allowed_origins = [o.strip() for o in os.getenv('CORS_ORIGINS', '*').split(',')]
+CORS(app, origins=allowed_origins, methods=['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'], allow_headers=['Content-Type', 'Authorization', 'x-admin-token'])
+
+# Rate limiting
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # Database configuration from environment variables
 DB_CONFIG = {
@@ -100,35 +113,37 @@ def health():
 
 # Authentication routes
 @app.route('/auth/login', methods=['POST'])
+@limiter.limit("5 per minute")
 def login():
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'JSON body required'}), 400
     username = data.get('username')
     password = data.get('password')
-    
+
     if not username or not password:
         return jsonify({'error': 'Username and password required'}), 400
-    
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
+
     try:
         cursor.execute("SELECT id, username, password_hash, is_admin FROM users WHERE username = %s", (username,))
         user = cursor.fetchone()
-        
+
         if not user or not verify_password(password, user['password_hash']):
             return jsonify({'error': 'Invalid credentials'}), 401
-        
-        # Create session token
+
         token = str(uuid.uuid4())
         expires_at = datetime.now() + timedelta(days=7)
-        
+
         cursor.execute("""
             INSERT INTO sessions (user_id, token, created_at, expires_at)
             VALUES (%s, %s, NOW(), %s)
         """, (user['id'], token, expires_at))
-        
+
         conn.commit()
-        
+
         return jsonify({
             'token': token,
             'user': {
@@ -137,6 +152,8 @@ def login():
                 'is_admin': bool(user['is_admin'])
             }
         })
+    except mysql.connector.Error as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
@@ -154,6 +171,8 @@ def logout():
         cursor.execute("DELETE FROM sessions WHERE token = %s", (token,))
         conn.commit()
         return jsonify({'message': 'Logged out successfully'})
+    except mysql.connector.Error as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
@@ -171,8 +190,11 @@ def get_current_user():
 # Admin routes
 @app.route('/admin/users', methods=['POST'])
 @require_admin_token
+@limiter.limit("10 per minute")
 def create_user():
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'JSON body required'}), 400
     username = data.get('username')
     password = data.get('password')
     is_admin = data.get('is_admin', False)
@@ -219,14 +241,15 @@ def list_users():
     try:
         cursor.execute("SELECT id, username, is_admin, created_at FROM users ORDER BY created_at DESC")
         users = cursor.fetchall()
-        
-        # Convert datetime to string and is_admin to boolean
+
         for user in users:
             if user['created_at']:
                 user['created_at'] = user['created_at'].isoformat()
             user['is_admin'] = bool(user['is_admin'])
-        
+
         return jsonify({'users': users})
+    except mysql.connector.Error as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
@@ -249,13 +272,13 @@ def delete_user(user_id):
         if user[1]:  # is_admin
             return jsonify({'error': 'Cannot delete admin users'}), 403
         
-        # Delete user sessions first
         cursor.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
-        # Delete user
         cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        
+
         conn.commit()
         return jsonify({'message': 'User deleted successfully'})
+    except mysql.connector.Error as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
@@ -264,6 +287,8 @@ def delete_user(user_id):
 @require_admin_token
 def update_user_password(user_id):
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'JSON body required'}), 400
     new_password = data.get('password')
     
     if not new_password:
@@ -280,9 +305,11 @@ def update_user_password(user_id):
         
         password_hash = hash_password(new_password)
         cursor.execute("UPDATE users SET password_hash = %s WHERE id = %s", (password_hash, user_id))
-        
+
         conn.commit()
         return jsonify({'message': 'Password updated successfully'})
+    except mysql.connector.Error as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()

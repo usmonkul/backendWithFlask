@@ -50,7 +50,11 @@ Set these in your cPanel environment:
 - `DB_USER` - MySQL username
 - `DB_PASSWORD` - MySQL password
 - `ADMIN_API_KEY` - Secret key for admin endpoints
-- `PORT` - Server port (set by cPanel)
+- `CORS_ORIGINS` - (Optional) Comma-separated list of allowed origins (default: `*` allows all)
+  - Example: `https://example.com,https://www.example.com`
+  - Use `*` to allow all origins (less secure)
+
+**Note:** `PORT` is NOT needed in cPanel - cPanel handles the port automatically. The PORT variable in the code is only used for local development.
 
 ### 3. Install Dependencies
 
@@ -125,10 +129,21 @@ python app.py
 - `GET /health` - Health check (returns `{"status":"ok"}`)
 - `GET /` - Root endpoint (returns API info)
 
+## Security Features
+
+- **Rate Limiting**: 
+  - Login endpoint: 5 requests per minute
+  - Create user endpoint: 10 requests per minute
+  - Default limits: 200 requests per day, 50 per hour for all endpoints
+- **CORS**: Configurable via `CORS_ORIGINS` environment variable (default: allows all origins)
+- **Password Hashing**: bcrypt with salt
+- **Session Management**: Tokens expire after 7 days
+- **SQL Injection Protection**: Parameterized queries
+- **Admin Protection**: Separate API key required for admin endpoints
+
 ## Notes
 
 - Database and tables are created manually via phpMyAdmin (NOT by code)
-- Simple CORS enabled (allows all origins)
 - Session tokens expire after 7 days
 - Admin users cannot be deleted
 
